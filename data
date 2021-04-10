@@ -1,0 +1,172 @@
+#This program is to exract data from https://zh-tw.tenable.com/plugins/nessus/families and add it into SQLite
+
+
+from selenium import webdriver
+import sqlite3
+from sqlite3 import Error
+import os
+
+def create_connection(db_file):
+    conn = None
+    try:
+        conn = sqlite3.connect(db_file)
+        return conn
+    except Error as e:
+        print(e)
+    return conn
+
+
+# update data
+def update_table(conn, task):
+    sql = ''' UPDATE Nessus
+              SET 嚴重性 = ? ,
+                  Synopsis = ? ,
+                  描述 = ?,
+                  解決方案 = ? ,
+                  另請參閱 = ?,
+                  Plugin詳細資訊=?,
+                  風險資訊=?,
+                  弱點資訊=?,
+                  參考資訊=?,
+                  VPR評分=?,
+                  CVE=?,
+                  更新日期=?
+              WHERE ID = ?'''
+    cur = conn.cursor()
+    cur.execute(sql, task)
+    conn.commit()
+
+
+# create a table
+def create_table(conn, create_table_sql):
+    try:
+        c = conn.cursor()
+        c.execute(create_table_sql)
+    except Error as e:
+        print(e)
+
+def create_project(conn, project):
+    sql = ''' INSERT INTO Nessus(ID,系列,嚴重性,Name,Synopsis,描述, 解決方案,另請參閱, Plugin詳細資訊,風險資訊,弱點資訊,參考資訊,VPR評分,CVE,更新日期)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '''
+    cur = conn.cursor()
+    cur.execute(sql, project)
+    return cur.lastrowid
+
+
+def left(driver,loc,ID):
+    driver.get(loc+ID)
+    content = []
+    numOfSections=len(driver.execute_script("return document.querySelector('#__next > div > div.app__container > div > div > div.col-12.col-md-9.col-xl-10 > div.card > div > div>div.col-md-8').querySelectorAll('section')"))
+    for i in range(numOfSections):
+        content.append(str(driver.execute_script(f"return document.querySelector('#__next > div > div.app__container > div > div > div.col-12.col-md-9.col-xl-10 > div.card > div > div>div.col-md-8').querySelectorAll('section')[{str(i)}]").text))
+    return content
+
+def right(driver,loc,ID):
+    driver.get(loc+ID)
+    content=[]
+    numOfSections=len(driver.execute_script("return document.querySelector('#__next > div > div.app__container > div > div > div.col-12.col-md-9.col-xl-10 > div.card > div > div>div.col-md-4').querySelectorAll('h4')"))
+    temp=(driver.execute_script("return document.querySelector('#__next > div > div.app__container > div > div > div.col-12.col-md-9.col-xl-10 > div.card > div > div > div.col-md-4')").text)
+    sections=[]
+    for i in range(numOfSections):
+        sections.append(str(driver.execute_script(f"return document.querySelector('#__next > div > div.app__container > div > div > div.col-12.col-md-9.col-xl-10 > div.card > div > div>div.col-md-4').querySelectorAll('h4')[{str(i)}]").text))
+    for i in range(len(sections)-1):
+        content.append(temp[temp.find(sections[i]) : temp.find(sections[i+1])])
+    content.append(temp[temp.find(sections[-1]):])
+    return content
+
+def vprExtract(risk):
+    if 'VPR 評分: ' in risk:
+        for line in risk.splitlines():
+            if 'VPR 評分: ' in line:
+                return line.replace('VPR 評分: ', '')
+    return ''
+
+def cveExtract(ref):
+    if 'CVE: ' in ref:
+        for line in ref.splitlines():
+            if 'CVE: ' in line:
+                return line.replace('CVE: ', '')
+    return ''
+
+
+def main():
+    IDs=[78921,76474,74091,69948,63136,62759]
+    op = webdriver.ChromeOptions()
+    op.add_argument('headless')
+    op.add_argument("--no-sandbox")
+    #chromedriver directory
+    driver = webdriver.Chrome(executable_path='chromedriver', options=op)
+    # DB directory
+    database = r"Nessus.db"
+
+    sql_create_projects_table = """CREATE TABLE IF NOT EXISTS Nessus(ID text,系列 text,嚴重性 text,Name text,Synopsis text, 描述 text,解決方案 text, 另請參閱 text, Plugin詳細資訊 text, 風險資訊 text,弱點資訊 text, 參考資訊 text, VPR評分 text,CVE text,更新日期 text); """
+
+    conn = create_connection(database)
+    if conn is not None:
+        create_table(conn, sql_create_projects_table)
+    else:
+        print("Error! cannot create the database connection.")
+    print(f'Total: {len(IDs)} IDs')
+    with conn:
+        for ID in IDs:
+            try:
+                print(IDs.index(ID))
+                driver.get(loc+ID)
+                name=(driver.execute_script("return document.querySelector('#__next > div > div.app__container > div > div > div.col-12.col-md-9.col-xl-10 > div.mb-3.row > div.col-md-8>h2')").text)
+                contentLeft=left(driver,loc,ID)
+                contentRight=right(driver,loc,ID)
+                syn=''
+                des=''
+                see=''
+                sol=''
+                for l in contentLeft:
+                    if 'Synopsis' in l.splitlines()[0]:
+                        syn=(l.replace('Synopsis\n',''))
+                    elif '描述' in l.splitlines()[0]:
+                        des=(l.replace('描述\n',''))
+                    elif '另請參閱' in l.splitlines()[0]:
+                        see=l.replace('另請參閱\n','')
+                    elif '解決方案' in l.splitlines()[0]:
+                        sol=(l.replace('解決方案\n',''))
+                det=''
+                risk=''
+                vul=''
+                ref=''
+                date=''
+                fam=''
+                sev=''
+                vpr=''
+                cve=''
+                for r in contentRight:
+                    if 'Plugin 詳細資訊' in r.splitlines()[0]:
+                        det=(r.replace('Plugin 詳細資訊\n', ''))
+                    elif '風險資訊' in r.splitlines()[0]:
+                        risk=(r.replace('風險資訊\n', ''))
+                        vpr = vprExtract(risk)
+                    elif '弱點資訊' in r.splitlines()[0]:
+                        vul =(r.replace('弱點資訊\n', '').replace('弱點資訊',''))
+                    elif '參考資訊' in r.splitlines()[0]:
+                        ref=( r.replace('參考資訊\n', ''))
+                        cve=cveExtract(ref)
+                    for line in r.splitlines():
+                        if '已更新: ' in line:
+                            date=(line.replace('已更新: ',''))
+                        elif '系列: ' in line:
+                            fam=(line.replace('系列: ',''))
+                        elif '嚴重性: ' in line:
+                            sev=(line.replace('嚴重性: ',''))
+                cur = conn.cursor()
+                cur.execute("SELECT ID FROM Nessus WHERE ID=?", [ID])
+                rows = cur.fetchall()
+                # if the data is already in DB, update its info
+                if str(ID) in str(rows):
+                    update_table(conn, (sev, syn, des, sol, see, det, risk, vul, ref, vpr,cve,date, str(ID)))
+                # if the data is not in DB yet, create one
+                else:
+                    create_project(conn, (str(ID), fam, sev, name, syn, des, sol, see, det, risk, vul, ref,vpr,cve,date))
+            except:
+                print('something is wrong, please runt he program again')
+                break
+
+if __name__ == '__main__':
+    main()
